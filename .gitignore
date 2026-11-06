@@ -1,0 +1,13 @@
+# Segredos e dados pessoais — nunca commitar
+.env
+garmin_painel.db
+responses/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml

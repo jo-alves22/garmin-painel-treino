@@ -1,0 +1,6 @@
+# Painel de treino — dependências
+# (pandas e requests já costumam estar no ambiente; streamlit puxa altair)
+streamlit>=1.30
+pandas>=2.0
+requests>=2.28
+python-dotenv>=1.0
