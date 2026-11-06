@@ -54,6 +54,36 @@ def race_time(vdot: float, distance_m: float) -> float:
     return (lo + hi) / 2
 
 
+def _velocity_for_vo2(vo2_cost_target: float) -> float:
+    """Inverte _vo2_cost: velocidade (m/min) que custa `vo2_cost_target` ml/kg/min."""
+    a, b, c = 0.000104, 0.182258, -(4.60 + vo2_cost_target)
+    return (-b + math.sqrt(b * b - 4 * a * c)) / (2 * a)
+
+
+def _velocity_for_duration(vdot: float, t_min: float) -> float:
+    """Velocidade (m/min) sustentável por t_min minutos, dado o VDOT."""
+    return _velocity_for_vo2(vdot * _pct_max(t_min))
+
+
+def training_paces(vdot: float) -> dict[str, float]:
+    """Paces de treino (s/km) de Daniels a partir do VDOT atual:
+      - easy: ~70% do VDOT (fora da curva de prova — é esforço deliberadamente
+        submáximo, não "melhor esforço possível" por tempo t)
+      - marathon: pace de prova de maratona (42195 m), via race_time
+      - threshold: esforço sustentável por ~60 min ("confortavelmente difícil")
+      - interval: esforço sustentável por ~5 min (~vVO2max)
+      - repetition: esforço sustentável por ~2 min (bem mais rápido, série curta)
+    """
+    marathon_s = race_time(vdot, 42195.0)
+    return {
+        "easy": 60000.0 / _velocity_for_vo2(0.70 * vdot),
+        "marathon": marathon_s / 42.195,
+        "threshold": 60000.0 / _velocity_for_duration(vdot, 60),
+        "interval": 60000.0 / _velocity_for_duration(vdot, 5),
+        "repetition": 60000.0 / _velocity_for_duration(vdot, 2),
+    }
+
+
 def efficiency_factor(distance_m: float, duration_s: float, avg_hr: float | None) -> float | None:
     """EF = velocidade (m/min) / FC média. Maior = mais eficiente aerobicamente."""
     if not avg_hr or not distance_m or not duration_s:

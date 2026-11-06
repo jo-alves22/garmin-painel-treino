@@ -1,13 +1,19 @@
 """Importa o plano real a partir do xlsx (aba Calendário) para plan_sessions.
 
-Uso:
-    python -m app.import_plan ~/Documents/Treino/plano_treino_5k_sub20_v3.xlsx
+Uso (CLI, pasta local):
+    python -m app.import_plan ~/Documents/Treino/plano_treino_5k_sub20_v3.xlsx [ano]
+
+Ou, pelo próprio painel (aba Plano), suba o .xlsx direto — ver `import_plan`,
+que aceita tanto um caminho quanto o arquivo enviado pelo `st.file_uploader`.
 
 Lê a aba "📆 Calendário" (linhas no formato  'DD/MM' | 'Dia' | 'texto da sessão'),
 classifica cada dia em Easy / Qualidade / Longo / Forca, e cria as sessões.
 Dias que combinam corrida + força (ex.: "⚡ Limiar ... + 💪 Força A") viram DUAS
 sessões (uma de corrida, uma Forca) para casar com as duas atividades do Garmin.
 Dias de descanso são ignorados (não são "treino a fazer").
+
+A planilha só tem 'DD/MM', sem ano — por isso `year` é obrigatório (a aba não dá
+pra inferir isso sozinha, e errar o ano quebra o casamento com as atividades).
 
 Substitui o conteúdo atual de plan_sessions (bootstrap do plano no app).
 """
@@ -18,13 +24,13 @@ import datetime as dt
 import re
 import sys
 from pathlib import Path
+from typing import BinaryIO
 
 import openpyxl
 
 from . import db, plan
 
 CAL_SHEET = "📆 Calendário"
-DEFAULT_YEAR = 2026  # o Bloco 2 vai de nov/2026 a dez/2026
 
 
 def _km(text: str) -> float | None:
@@ -63,8 +69,8 @@ def _forca_title(text: str) -> str | None:
     return None
 
 
-def parse_calendar(xlsx_path: Path) -> list[dict]:
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+def parse_calendar(xlsx_source: str | Path | BinaryIO, year: int) -> list[dict]:
+    wb = openpyxl.load_workbook(xlsx_source, data_only=True)
     ws = wb[CAL_SHEET]
     sessions: list[dict] = []
     for row in ws.iter_rows(values_only=True):
@@ -72,7 +78,7 @@ def parse_calendar(xlsx_path: Path) -> list[dict]:
         if not re.match(r"^\d{2}/\d{2}$", c0):
             continue
         day, month = (int(x) for x in c0.split("/"))
-        date = dt.date(DEFAULT_YEAR, month, day).isoformat()
+        date = dt.date(year, month, day).isoformat()
         text = str(row[2]).strip() if len(row) > 2 and row[2] else ""
 
         kind, title, km = _classify(text)
@@ -87,9 +93,11 @@ def parse_calendar(xlsx_path: Path) -> list[dict]:
     return sessions
 
 
-def import_plan(xlsx_path: str | Path, replace: bool = True) -> int:
+def import_plan(xlsx_source: str | Path | BinaryIO, year: int, replace: bool = True) -> int:
     db.init_db()
-    sessions = parse_calendar(Path(xlsx_path).expanduser())
+    if isinstance(xlsx_source, (str, Path)):
+        xlsx_source = Path(xlsx_source).expanduser()
+    sessions = parse_calendar(xlsx_source, year)
     with db.connect() as conn:
         if replace:
             conn.execute("DELETE FROM plan_sessions")
@@ -101,5 +109,6 @@ def import_plan(xlsx_path: str | Path, replace: bool = True) -> int:
 if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else \
         str(Path.home() / "Documents/Treino/plano_treino_5k_sub20_v3.xlsx")
-    n = import_plan(path)
-    print(f"{n} sessões importadas de {path}")
+    year = int(sys.argv[2]) if len(sys.argv) > 2 else dt.date.today().year
+    n = import_plan(path, year)
+    print(f"{n} sessões importadas de {path} (ano {year})")

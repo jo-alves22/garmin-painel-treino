@@ -20,7 +20,7 @@ import streamlit as st
 
 # Permite rodar via `streamlit run app/dashboard.py` (importa como pacote `app`).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app import db, import_vo2max, metrics, plan, sync  # noqa: E402
+from app import db, goals, import_plan, import_vo2max, metrics, plan, plan_generator, sync  # noqa: E402
 from app.garmin_client import GarminError  # noqa: E402
 
 st.set_page_config(page_title="Painel de Treino", page_icon="🏃", layout="wide")
@@ -303,6 +303,57 @@ with tab_evo:
 with tab_plano:
     st.subheader("Plano de treino")
 
+    with st.expander("🎯 Objetivo e disponibilidade"):
+        goal = goals.get_goal()
+        avail = goals.get_availability()
+
+        gc1, gc2, gc3 = st.columns(3)
+        dist = gc1.number_input("Distância alvo (km)", min_value=0.1, value=goal["distance_km"], step=0.5)
+        tmin = gc2.number_input("Tempo alvo — min", min_value=0, value=goal["time_s"] // 60, step=1)
+        tsec = gc3.number_input("Tempo alvo — seg", min_value=0, max_value=59, value=goal["time_s"] % 60, step=1)
+
+        has_date = st.checkbox("Tenho uma data de prova definida", value=bool(goal["date"]))
+        race_date = None
+        if has_date:
+            race_date = st.date_input(
+                "Data da prova",
+                value=dt.date.fromisoformat(goal["date"]) if goal["date"] else dt.date.today(),
+                format="DD/MM/YYYY",
+            )
+
+        st.caption("Dias disponíveis pra treinar")
+        dias_sel = st.multiselect(
+            "Dias disponíveis pra treinar", options=list(range(7)), default=avail,
+            format_func=lambda d: goals.WEEKDAY_NAMES[d], label_visibility="collapsed",
+        )
+
+        if st.button("💾 Salvar objetivo"):
+            goals.set_goal(dist, int(tmin) * 60 + int(tsec), race_date.isoformat() if race_date else None)
+            goals.set_availability(dias_sel)
+            st.success("Objetivo e disponibilidade salvos.")
+
+    with st.expander("📥 Importar planilha de plano"):
+        st.caption("Aceita planilha no formato das suas planilhas de plano (aba "
+                   "'📆 Calendário', linhas 'DD/MM | Dia | sessão'). "
+                   "⚠️ **Substitui TODAS as sessões do plano atual** — as geradas pelo "
+                   "motor de regras ou criadas à mão também.")
+        ic1, ic2 = st.columns([1, 2])
+        plan_year = ic1.number_input("Ano da planilha", min_value=2020, max_value=2100,
+                                      value=dt.date.today().year, step=1)
+        confirm_replace = ic2.checkbox("Confirmo que quero substituir o plano atual pela planilha")
+        plan_file = st.file_uploader("Planilha do plano (.xlsx)", type="xlsx", key="plan_xlsx",
+                                      disabled=not confirm_replace)
+        if plan_file is not None and confirm_replace:
+            try:
+                n = import_plan.import_plan(plan_file, int(plan_year))
+                st.cache_data.clear()
+                st.success(f"{n} sessões importadas da planilha.")
+                st.rerun()
+            except KeyError:
+                st.error(f"Não encontrei a aba '{import_plan.CAL_SHEET}' nessa planilha.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Falha ao importar a planilha: {e}")
+
     st.markdown("#### 🔭 Próximos treinos")
     horizon = st.slider("Ver quantas semanas à frente", 1, 8, 4, key="plano_horizon")
     future_sessions = plan.upcoming(days=horizon * 7)
@@ -348,6 +399,20 @@ with tab_plano:
     st.caption(f"Semana de {monday.strftime('%d/%m/%Y')} a {sunday.strftime('%d/%m/%Y')}")
 
     status = plan.week_status(week_sel)
+
+    gen_disabled = status["planned"] > 0
+    gen_help = ("Usa VDOT/VO2max, objetivo, dias disponíveis e recuperação recente pra montar "
+                "a semana (regras de Daniels/80-20, sem IA). Só em semana vazia — apague as "
+                "sessões antes de gerar de novo." if gen_disabled else None)
+    if st.button("🧠 Gerar com motor de regras", width='stretch', disabled=gen_disabled, help=gen_help):
+        try:
+            sessions = plan_generator.generate_week_plan(monday)
+            n = plan_generator.apply_week_plan(monday, sessions)
+            st.success(f"{n} sessões geradas a partir do seu histórico e objetivo.")
+            st.rerun()
+        except plan_generator.PlanGeneratorError as e:
+            st.error(str(e))
+
     st.metric("Progresso", f"{status['done']}/{status['planned']}")
 
     sessions = status["sessions"]
