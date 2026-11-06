@@ -147,7 +147,9 @@ with tab_hoje:
     vdot = best_vdot_recent(runs)
     vo2_real = latest_vo2max(load_vo2max())
 
-    st.subheader(f"Como estou — semana {iso}")
+    last_sync_raw = db.get_meta("last_sync")
+    sync_str = dt.datetime.fromisoformat(last_sync_raw).strftime("%d/%m/%Y %H:%M") if last_sync_raw else None
+    st.subheader(f"Como estou — dados de {sync_str}" if sync_str else "Como estou — ainda sem sync")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     if vo2_real:
         c1.metric("VO2max (Garmin)", f"{vo2_real:.0f}",
