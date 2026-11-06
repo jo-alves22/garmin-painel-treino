@@ -14,6 +14,7 @@ import datetime as dt
 import os
 import sys
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -80,6 +81,12 @@ def load_vo2max(sport: str = "RUNNING") -> pd.DataFrame:
 
 def latest_vo2max(vo2: pd.DataFrame) -> float | None:
     return float(vo2["value"].iloc[-1]) if not vo2.empty else None
+
+
+def week_monday(iso_week) -> pd.Series:
+    """Converte 'YYYY-Www' (segunda-feira ISO) em data real — p/ eixo dos gráficos
+    em vez do código de semana, que ninguém lê de cabeça."""
+    return pd.to_datetime(pd.Series(iso_week).astype(str) + "-1", format="%G-W%V-%u")
 
 
 # --------------------------------------------------------------------------
@@ -205,14 +212,23 @@ with tab_evo:
     rv = runs[runs["vdot"].notna()]
     if not vo2_hist.empty or not rv.empty:
         st.markdown("**VO2max — oficial (Garmin) vs proxy (VDOT dos treinos)**")
-        chart = pd.DataFrame(index=pd.Index([], name="date"))
+        frames = []
         if not vo2_hist.empty:
-            chart["VO2max (Garmin)"] = vo2_hist.set_index("date")["value"]
+            frames.append(vo2_hist.rename(columns={"value": "valor"}).assign(série="VO2max (Garmin)"))
         if not rv.empty:
-            vdot_wk = rv.groupby("iso_week")["vdot"].max()
-            vdot_wk.index = pd.to_datetime(vdot_wk.index + "-1", format="%G-W%V-%u")
-            chart["VDOT (melhor da semana)"] = vdot_wk
-        st.line_chart(chart)
+            vdot_wk = rv.groupby("iso_week")["vdot"].max().reset_index()
+            vdot_wk["date"] = week_monday(vdot_wk["iso_week"])
+            frames.append(vdot_wk.rename(columns={"vdot": "valor"})[["date", "valor"]]
+                          .assign(série="VDOT (melhor da semana)"))
+        long_df = pd.concat(frames, ignore_index=True)
+        vo2_chart = alt.Chart(long_df).mark_line().encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%b/%Y", labelAngle=-45)),
+            y=alt.Y("valor:Q", title=None),
+            color=alt.Color("série:N", title=None),
+            tooltip=[alt.Tooltip("date:T", title="Data", format="%d/%m/%Y"),
+                     alt.Tooltip("valor:Q", title="Valor"), "série:N"],
+        )
+        st.altair_chart(vo2_chart, width='stretch')
         caption = ("Oficial = direto do relógio (Firstbeat), importado do export GDPR. "
                     if not vo2_hist.empty else "")
         st.caption(caption + "Proxy = VDOT/Daniels a partir do melhor esforço de cada semana "
@@ -224,9 +240,16 @@ with tab_evo:
 
     c1, c2 = st.columns(2)
     with c1:
-        vol_wk = runs.groupby("iso_week")["km"].sum().rename("km/semana")
+        vol_wk = runs.groupby("iso_week")["km"].sum().reset_index(name="km")
+        vol_wk["semana"] = week_monday(vol_wk["iso_week"]).dt.strftime("%d/%m/%Y")
         st.markdown("**Volume semanal (km)**")
-        st.bar_chart(vol_wk)
+        vol_chart = alt.Chart(vol_wk).mark_bar().encode(
+            x=alt.X("semana:N", sort=vol_wk["semana"].tolist(), title=None,
+                     axis=alt.Axis(labelAngle=-45)),
+            y=alt.Y("km:Q", title="km/semana"),
+            tooltip=["semana", alt.Tooltip("km:Q", format=".1f")],
+        )
+        st.altair_chart(vol_chart, width='stretch')
     with c2:
         # 80/20 por semana (% fácil)
         g = runs.groupby("iso_week").agg(
@@ -235,19 +258,33 @@ with tab_evo:
             z3=("hr_z3_s", lambda x: x.fillna(0).sum()),
             z4=("hr_z4_s", lambda x: x.fillna(0).sum()),
             z5=("hr_z5_s", lambda x: x.fillna(0).sum()),
-        )
+        ).reset_index()
         tot = g["easy"] + g["z2"] + g["z3"] + g["z4"] + g["z5"]
-        easy_pct = (100 * (g["easy"] + g["z2"]) / tot).where(tot > 0).rename("% tempo fácil (Z1–Z2)")
+        g["easy_pct"] = (100 * (g["easy"] + g["z2"]) / tot).where(tot > 0)
+        g["semana"] = week_monday(g["iso_week"]).dt.strftime("%d/%m/%Y")
         st.markdown("**Distribuição de intensidade — % fácil (alvo 80%)**")
-        st.line_chart(easy_pct)
+        intens_chart = alt.Chart(g.dropna(subset=["easy_pct"])).mark_line(point=True).encode(
+            x=alt.X("semana:N", sort=g["semana"].tolist(), title=None,
+                     axis=alt.Axis(labelAngle=-45)),
+            y=alt.Y("easy_pct:Q", title="% fácil"),
+            tooltip=["semana", alt.Tooltip("easy_pct:Q", title="% fácil", format=".0f")],
+        )
+        st.altair_chart(intens_chart, width='stretch')
 
     c3, c4 = st.columns(2)
     with c3:
         ef = runs[runs["ef"].notna()]
         if not ef.empty:
-            ef_wk = ef.groupby("iso_week")["ef"].mean().rename("Efficiency Factor")
+            ef_wk = ef.groupby("iso_week")["ef"].mean().reset_index(name="ef")
+            ef_wk["semana"] = week_monday(ef_wk["iso_week"]).dt.strftime("%d/%m/%Y")
             st.markdown("**Eficiência aeróbia (EF = m/min ÷ FC)**")
-            st.line_chart(ef_wk)
+            ef_chart = alt.Chart(ef_wk).mark_line(point=True).encode(
+                x=alt.X("semana:N", sort=ef_wk["semana"].tolist(), title=None,
+                         axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y("ef:Q", title="EF"),
+                tooltip=["semana", alt.Tooltip("ef:Q", title="EF", format=".3f")],
+            )
+            st.altair_chart(ef_chart, width='stretch')
             st.caption("EF subindo = mesmo pace com FC menor = motor melhorando.")
     with c4:
         if not well.empty:
@@ -265,16 +302,53 @@ with tab_evo:
 # ==========================================================================
 with tab_plano:
     st.subheader("Plano de treino")
-    cols = st.columns([2, 1, 1])
-    week_sel = cols[0].text_input("Semana (ISO, ex.: 2026-W45)", value=current_iso_week())
-    if cols[1].button("➕ Criar semana modelo", width='stretch'):
-        monday = dt.date.fromisocalendar(int(week_sel[:4]), int(week_sel[-2:]), 1)
-        n = plan.seed_template_week(monday)
+
+    st.markdown("#### 🔭 Próximos treinos")
+    horizon = st.slider("Ver quantas semanas à frente", 1, 8, 4, key="plano_horizon")
+    future_sessions = plan.upcoming(days=horizon * 7)
+    if future_sessions:
+        df_up = pd.DataFrame(future_sessions)
+        df_up["Dia"] = pd.to_datetime(df_up["date"]).dt.strftime("%a %d/%m")
+        df_up = df_up.rename(columns={"kind": "Tipo", "title": "Título",
+                                       "target": "Alvo", "target_km": "km alvo"})
+        st.dataframe(df_up[["Dia", "Tipo", "Título", "Alvo", "km alvo"]],
+                     width='stretch', hide_index=True)
+    else:
+        st.caption(f"Nada programado (e não feito) nas próximas {horizon} semana(s) — "
+                   "monte as semanas no editor abaixo.")
+
+    st.divider()
+    st.markdown("#### ✏️ Editar semana")
+
+    if "plano_dia_ref" not in st.session_state:
+        st.session_state.plano_dia_ref = dt.date.today()
+
+    nav = st.columns([1, 1, 2, 1, 1])
+    # Os botões que alteram plano_dia_ref precisam ser instanciados (e resolvidos)
+    # ANTES do date_input com essa mesma key — o Streamlit não deixa mexer no
+    # session_state de um widget já criado na mesma execução do script.
+    prev_clicked = nav[0].button("◀ Anterior", width='stretch')
+    hoje_clicked = nav[1].button("Hoje", width='stretch')
+    next_clicked = nav[3].button("Próxima ▶", width='stretch')
+    if prev_clicked:
+        st.session_state.plano_dia_ref -= dt.timedelta(weeks=1)
+    if hoje_clicked:
+        st.session_state.plano_dia_ref = dt.date.today()
+    if next_clicked:
+        st.session_state.plano_dia_ref += dt.timedelta(weeks=1)
+    dia_ref = nav[2].date_input("Um dia da semana", key="plano_dia_ref", format="DD/MM/YYYY")
+    if nav[4].button("➕ Semana modelo", width='stretch'):
+        n = plan.seed_template_week(plan.monday_of(dia_ref))
         st.success(f"{n} sessões criadas." if n else "Semana já tinha sessões.")
         st.rerun()
 
+    monday = plan.monday_of(dia_ref)
+    sunday = monday + dt.timedelta(days=6)
+    week_sel = plan.iso_week_of(dia_ref.isoformat())
+    st.caption(f"Semana de {monday.strftime('%d/%m/%Y')} a {sunday.strftime('%d/%m/%Y')}")
+
     status = plan.week_status(week_sel)
-    cols[2].metric("Progresso", f"{status['done']}/{status['planned']}")
+    st.metric("Progresso", f"{status['done']}/{status['planned']}")
 
     sessions = status["sessions"]
     if sessions:
